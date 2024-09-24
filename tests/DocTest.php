@@ -37,6 +37,7 @@ it('can parse payloads', function () {
     $payloads = collect($parser->getPayloads())->keyBy('name');
 
     expect($payloads->has('gender'))->toBeTrue('has gender');
-    expect($payloads->get('gender')['options'])->toBeJson('has gender options');
+    expect($payloads->get('gender'))->toHaveKeys(['options'], 'gender contains key: options');
+    expect($payloads->get('gender')['options'])->toBeJson('gender options is json from config("enums.gender")');
 
 });
