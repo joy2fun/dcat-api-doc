@@ -13,8 +13,22 @@ use ReflectionException;
 class ApiParser
 {
     protected $parser;
+    protected $nodes;
 
-    public function getParser()
+    public function __construct(array $nodes = [], $code = null)
+    {
+        $this->setNodes($nodes);
+        if ($code) {
+            $this->setNodes($this->getParser()->parse($code));
+        }
+    }
+
+    public function setNodes(array $nodes)
+    {
+        $this->nodes = $nodes;
+    }
+
+    public function getParser(): \PhpParser\Parser
     {
         if (! $this->parser) {
             $this->parser = (new ParserFactory)->createForHostVersion();
@@ -23,17 +37,13 @@ class ApiParser
         return $this->parser;
     }
 
-    public function getFilters($class)
+    public function getFilters()
     {
-        $parser = $this->getParser();
-        $code = ($this->getClassSourceCode($class));
-
         $columns = [];
         $scopes = [];
 
         try {
-            $nodes = $parser->parse($code);
-            $grid = $this->findMethod($nodes, 'grid');
+            $grid = $this->findMethod('grid');
             $filters = $this->findMethodCalls([$grid], ['equal', 'like', 'between', 'scope']);
             foreach ($filters as $filter) {
                 if ($filter->name->name == 'scope') {
@@ -42,6 +52,7 @@ class ApiParser
                     $columns[] = [
                         'name' => ($filter->args[0] ?? null)?->value->value,
                         'label' => ($filter->args[1] ?? null)?->value->value,
+                        'method' => $filter->name->name,
                     ];
                 }
             }
@@ -53,16 +64,61 @@ class ApiParser
             $columns[] = [
                 'name' => '_scope_',
                 'label' => implode(', ', $scopes),
+                'method' => 'scope',
             ];
         }
 
         return $columns;
     }
 
-    public function findMethod($nodes, $name)
+    public function getPayloads()
+    {
+        $columns = [];
+        $lastOption = null;
+
+        try {
+            $from = $this->findMethod('form');
+            $fields = $this->findMethodCalls([$from], [
+                'text', 'select', 'radio', 'number',
+                'options',
+            ]);
+
+            foreach ($fields as $field) {
+                if ($field->name->name == 'options') {
+                    $prettyPrinter = new \PhpParser\PrettyPrinter\Standard;
+                    // config('enums.x')
+                    if($field->args[0]?->value?->name?->name ?? '' == 'config') {
+                        $configKey = trim($prettyPrinter->prettyPrint($field->args[0]->value->args), '"\'');
+                        $lastOption = json_encode(config($configKey, $configKey), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+                    } else {
+                        $lastOption = $prettyPrinter->prettyPrint($field->args);
+                    }
+                    continue;
+                }
+                $tmp = [
+                    'name' => ($field->args[0] ?? null)?->value->value,
+                    'label' => ($field->args[1] ?? null)?->value->value,
+                    'method' => $field->name->name,
+                ];
+
+                if ($lastOption && in_array($tmp['method'], ['radio', 'select'])) {
+                    $tmp['options'] = $lastOption;
+                    $lastOption = null;
+                }
+
+                $columns[] = $tmp;
+            }
+        } catch (Error $e) {
+            // echo 'Parse Error: ', $e->getMessage();
+        }
+
+        return $columns;
+    }
+
+    public function findMethod($name)
     {
         $nodeFinder = new NodeFinder;
-        $method = $nodeFinder->findFirst($nodes, function (Node $node) use ($name) {
+        $method = $nodeFinder->findFirst($this->nodes, function (Node $node) use ($name) {
             return $node instanceof \PhpParser\Node\Stmt\ClassMethod
                 && $node->name->toString() === $name;
         });
